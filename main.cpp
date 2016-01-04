@@ -74,17 +74,18 @@ int populateCmd(ClientData data, Tcl_Interp* interp, int objc, Tcl_Obj *const ob
     session->SetTimeoutMillis(60000);
     assertOk(session->SetFlushMode(kudu::client::KuduSession::FlushMode::MANUAL_FLUSH));
     kudu::Slice textSlice("Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, conset");
-    for (int i = 0; i < 12000; ++i) {
+    for (int i = 0; i < 120000; ++i) {
         for (int j = 0; j < 100; ++j) {
             auto insert = table->NewInsert();
             auto row = insert->mutable_row();
-            assertOk(row->SetInt64("mykey", i * 100 + j));
+            assertOk(row->SetInt64("mykey", i * 1000 + j));
             assertOk(row->SetString("textcol1", textSlice));
             assertOk(row->SetString("textcol2", textSlice));
             assertOk(row->SetString("textcol3", textSlice));
-            assertOk(row->SetFloat("salary", 0.1));
+            assertOk(row->SetFloat("salary", 0.05));
             assertOk(session->Apply(insert));
         }
+        std::cout << "Populated " << (i+1)*1000 << " rows\n";
         assertOk(session->Flush());
     }
     std::cout << "Command completed in " << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - start).count() << " s\n";
@@ -119,10 +120,39 @@ int scanCmd(ClientData data, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]
     return TCL_OK;
 }
 
+int getCmd(ClientData data, Tcl_Interp* interp, int objc, Tcl_Obj* const objv[]) {
+    if (objc != 2) {
+        std::cerr << "USAGE: getRow primarykey" << std::endl;
+    }
+    auto& client = *reinterpret_cast<std::tr1::shared_ptr<kudu::client::KuduClient>*>(data);
+    std::tr1::shared_ptr<kudu::client::KuduTable> table;
+    assertOk(client->OpenTable("test", &table));
+    int key;
+    if (Tcl_GetIntFromObj(interp, objv[1], &key) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    auto begin = std::chrono::system_clock::now();
+    kudu::client::KuduScanner scanner(table.get());
+    assertOk(scanner.AddConjunctPredicate(table->NewComparisonPredicate("mykey", kudu::client::KuduPredicate::EQUAL, kudu::client::KuduValue::FromInt(key))));
+    assertOk(scanner.Open());
+    std::vector<kudu::client::KuduRowResult> rows;
+    while (scanner.HasMoreRows()) {
+        scanner.NextBatch(&rows);
+        for (auto& row : rows) {
+            float f;
+            assertOk(row.GetFloat("salary", &f));
+            std::cout << f << std::endl;
+        }
+    }
+    auto t = std::chrono::system_clock::now() - begin;
+    std::cout << "Fetched in " << std::chrono::duration_cast<std::chrono::microseconds>(t).count() << "us\n";
+    return TCL_OK;
+}
+
 int connectCmd(ClientData data, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) {
     auto client = reinterpret_cast<std::tr1::shared_ptr<kudu::client::KuduClient>*>(data);
     kudu::client::KuduClientBuilder clientBuilder;
-    clientBuilder.add_master_server_addr("127.0.0.1");
+    clientBuilder.add_master_server_addr("euler09");
     clientBuilder.Build(client);
 
     return TCL_OK;
@@ -137,6 +167,7 @@ int initTcl(Tcl_Interp* interp) {
     Tcl_CreateObjCommand(interp, "connect", &connectCmd, clientPtr, &deleteClient);
     Tcl_CreateObjCommand(interp, "populate", &populateCmd, clientPtr, nullptr);
     Tcl_CreateObjCommand(interp, "scan", &scanCmd, clientPtr, nullptr);
+    Tcl_CreateObjCommand(interp, "getRow", &getCmd, clientPtr, nullptr);
     return TCL_OK;
 }
 
